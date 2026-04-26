@@ -9,6 +9,7 @@ import logging
 import os
 import csv
 import io
+import sqlite3  # ✅ CORRIGÉ : Importé globalement pour éviter NameError
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
@@ -16,14 +17,11 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# 🔧 Import PostgreSQL
+# Import PostgreSQL (Railway l'installera via requirements.txt)
 try:
     import psycopg2
-    from psycopg2.extras import RealDictCursor
-    USE_POSTGRES = True
 except ImportError:
-    USE_POSTGRES = False
-    import sqlite3
+    pass
 
 # Configuration Logging
 logging.basicConfig(
@@ -51,7 +49,7 @@ STATE_PRENOM, STATE_NOM, STATE_CONTENT, STATE_EDIT = range(4)
 user_sessions = {}
 
 def get_db_connection():
-    """Connexion BDD"""
+    """Retourne une connexion à la BDD (PostgreSQL ou SQLite)"""
     if USE_POSTGRES:
         return psycopg2.connect(DATABASE_URL)
     else:
