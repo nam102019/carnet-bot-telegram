@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 🤖 Bot Vitrine - Carnet de Sauvegarde
-Menu permanent + Confirmations explicites + PostgreSQL/SQLite
+✅ Boutons corrigés + Confirmations explicites + PostgreSQL/SQLite
 """
 
 import logging
@@ -51,6 +51,11 @@ QUICK_MENU = ReplyKeyboardMarkup([
     ["🏠 Accueil", "❓ Aide"]
 ], resize_keyboard=True, is_persistent=True)
 
+# 🎯 Filtres STRICTS pour éviter les conflits
+MENU_TEXT_REGEX = r'^(🔵 1xbet|🟣 Afropari|🟡 Melbet|➕ Ajouter| Voir fiches|📤 Exporter|🏠 Accueil|❓ Aide)$'
+MENU_FILTER = filters.Regex(MENU_TEXT_REGEX)
+INPUT_FILTER = filters.TEXT & ~filters.COMMAND & ~MENU_FILTER  # Capture TOUT sauf les commandes et les boutons
+
 # États de conversation
 STATE_PRENOM, STATE_NOM, STATE_CONTENT, STATE_EDIT = range(4)
 user_sessions = {}
@@ -87,10 +92,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_quick_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gère les clics sur le menu permanent en bas"""
+    """Gère EXCLUSIVEMENT les clics sur le menu permanent"""
     text = update.message.text.strip()
     cat_map = {"🔵 1xbet": "1xbet", "🟣 Afropari": "Afropari", "🟡 Melbet": "Melbet"}
     
+    # Annuler toute conversation en cours si l'utilisateur clique sur le menu
+    if context.user_data.get('conv_active'):
+        context.user_data.clear()
+
     if text in cat_map:
         cat = cat_map[text]
         kb = [[InlineKeyboardButton(f"📄 {sub}", callback_data=f"sub_{cat}_{sub.replace(' ', '_')}")] for sub in CATEGORIES[cat]["subs"]]
@@ -119,7 +128,6 @@ async def handle_quick_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Le menu en bas reste affiché en permanence.\n"
             "• Cliquez sur une catégorie pour voir ses sous-sections.\n"
             "• Les fiches sont classées par nom/prénom.\n"
-            "• Cliquez sur ✏️ pour modifier le texte directement.\n"
             "• Chaque action affiche un message de confirmation.",
             parse_mode="Markdown"
         )
@@ -155,6 +163,7 @@ async def subcategory_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    context.user_data['conv_active'] = True
     parts = query.data.split("_", 2)
     user_sessions[query.from_user.id] = {"cat": parts[1], "sub": parts[2].replace("_", " "), "step": "prenom"}
     await query.edit_message_text(f"➕ *NOUVELLE FICHE*\n\n*1/3 Entrez le Prénom :*", parse_mode="Markdown")
@@ -185,14 +194,14 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nid = cur.fetchone()[0]
     cur.close(); conn.close()
     del user_sessions[uid]
+    context.user_data.pop('conv_active', None)
     
-    # ✅ MESSAGE DE CONFIRMATION EXPLICITE
     await update.message.reply_text(
         f"✅ *FICHE AJOUTÉE AVEC SUCCÈS !*\n\n"
         f"🆔 ID : `{nid}`\n"
         f"👤 {sess['prenom']} {sess['nom']}\n"
         f"📂 {sess['cat']} → {sess['sub']}\n"
-        f"💾 *Données sauvegardées en base de données.*",
+        f"💾 *Données sauvegardées en base.*",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
@@ -245,6 +254,7 @@ async def view_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    context.user_data['conv_active'] = True
     nid = int(query.data.split("_")[1])
     
     conn = get_db_connection()
@@ -278,16 +288,17 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     cur.close(); conn.close()
     
-    # ✅ MESSAGE DE CONFIRMATION EXPLICITE
+    context.user_data.pop('conv_active', None)
+    context.user_data.clear()
+    
     await update.message.reply_text(
         f"✅ *FICHE MODIFIÉE AVEC SUCCÈS !*\n\n"
         f"🆔 ID : `{nid}`\n"
         f"📂 {cat} → {sub}\n"
         f"📝 Contenu mis à jour.\n"
-        f"💾 *Changements sauvegardés en base de données.*",
+        f"💾 *Changements sauvegardés en base.*",
         parse_mode="Markdown"
     )
-    context.user_data.clear()
     return ConversationHandler.END
 
 # ==================== 🗑️ SUPPRESSION AVEC CONFIRMATION ====================
@@ -314,7 +325,6 @@ async def exec_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     cur.close(); conn.close()
     
-    # ✅ MESSAGE DE CONFIRMATION EXPLICITE
     await query.edit_message_text(
         f"🗑️ *FICHE SUPPRIMÉE AVEC SUCCÈS !*\n\n"
         f"🆔 ID : `{nid}`\n"
@@ -358,11 +368,11 @@ def main():
     
     app = Application.builder().token(TOKEN).build()
     
-    # 📌 ORDRE CRITIQUE : Menu rapide EN PREMIER pour qu'il fonctionne
+    # 1️⃣ Menu rapide (filtre STRICT)
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_menu))
+    app.add_handler(MessageHandler(MENU_FILTER, handle_quick_menu))
     
-    # Callbacks Inline
+    # 2️⃣ Callbacks Inline
     app.add_handler(CallbackQueryHandler(show_vitrine_menu, pattern="^main$"))
     app.add_handler(CallbackQueryHandler(category_view, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(subcategory_view, pattern="^sub_"))
@@ -372,24 +382,27 @@ def main():
     app.add_handler(CallbackQueryHandler(exec_delete, pattern="^exec_del_"))
     app.add_handler(CallbackQueryHandler(export_csv, pattern="^export_"))
     
-    # Conversations (sans filtres regex qui bloquaient les boutons)
+    # 3️⃣ Conversations (filtre INPUT_FILTER pour ignorer les clics menu)
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add, pattern="^add_")],
         states={
-            STATE_PRENOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_prenom)],
-            STATE_NOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_nom)],
-            STATE_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_note)],
-        }, fallbacks=[]
+            STATE_PRENOM: [MessageHandler(INPUT_FILTER, get_prenom)],
+            STATE_NOM: [MessageHandler(INPUT_FILTER, get_nom)],
+            STATE_CONTENT: [MessageHandler(INPUT_FILTER, save_note)],
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+        name="add_conv"
     ))
     
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_edit, pattern="^edit_")],
-        states={STATE_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)]},
-        fallbacks=[]
+        states={STATE_EDIT: [MessageHandler(INPUT_FILTER, save_edit)]},
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+        name="edit_conv"
     ))
     
     logger.info("✅ Bot prêt !")
-    print("🤖 Bot démarré avec menu rapide & confirmations explicites")
+    print("🤖 Bot démarré. Boutons corrigés & confirmations actives.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
