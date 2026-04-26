@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 🤖 Bot Vitrine - Carnet de Sauvegarde
-Hébergé sur Railway.app avec PostgreSQL
+Hébergé sur Railway.app avec PostgreSQL (fallback SQLite)
+Fonctionnalités : Vitrine, Prénom/Nom, Modification directe, Export CSV
 """
 
 import logging
 import os
 import csv
 import io
-import sqlite3  # ✅ CORRIGÉ : Importé globalement pour éviter NameError
+import sqlite3  # ✅ Import global pour éviter NameError
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, 
@@ -44,7 +45,7 @@ CATEGORIES = {
     "Melbet": {"emoji": "🟡", "subs": ["Partenaire promo code", "Agent Mobcash"]}
 }
 
-# États
+# États de conversation
 STATE_PRENOM, STATE_NOM, STATE_CONTENT, STATE_EDIT = range(4)
 user_sessions = {}
 
@@ -91,9 +92,9 @@ def init_db():
     db_type = "PostgreSQL ✅" if USE_POSTGRES else "SQLite"
     logger.info(f"✅ DB initialisée : {db_type}")
 
-# ==================== COMMANDES ====================
+# ==================== COMMANDES & MENUS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 *Bienvenue !*\n\n🏪 Utilisez le menu.", parse_mode="Markdown")
+    await update.message.reply_text("👋 *Bienvenue !*\n\n🏪 Utilisez le menu ci-dessous.", parse_mode="Markdown")
     await show_vitrine_menu(update)
 
 async def show_vitrine_menu(update: Update):
@@ -103,13 +104,13 @@ async def show_vitrine_menu(update: Update):
     
     if hasattr(update, 'callback_query') and update.callback_query:
         await update.callback_query.edit_message_text(
-            "🏪 *CATÉGORIES*\n\nChoisissez :",
+            "🏪 *CATÉGORIES*\n\nChoisissez une marque :",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text(
-            "🏪 *CATÉGORIES*\n\nChoisissez :",
+            "🏪 *CATÉGORIES*\n\nChoisissez une marque :",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -126,7 +127,7 @@ async def category_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🔙 Retour", callback_data="main")])
     
     await query.edit_message_text(
-        f"📂 *{cat.upper()}*\n\nSections :",
+        f"📂 *{cat.upper()}*\n\nSélectionnez une section :",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -139,17 +140,18 @@ async def subcategory_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub = parts[2].replace("_", " ")
     
     keyboard = [
-        [InlineKeyboardButton("➕ Ajouter", callback_data=f"add_{cat}_{parts[2]}")],
-        [InlineKeyboardButton("📋 Voir", callback_data=f"list_{cat}_{parts[2]}")],
+        [InlineKeyboardButton("➕ Ajouter une fiche", callback_data=f"add_{cat}_{parts[2]}")],
+        [InlineKeyboardButton("📋 Voir les fiches", callback_data=f"list_{cat}_{parts[2]}")],
         [InlineKeyboardButton("🔙 Retour", callback_data=f"cat_{cat}")]
     ]
     
     await query.edit_message_text(
-        f"📂 {cat}\n📄 {sub}\n\nAction :",
+        f"📂 {cat}\n📄 {sub}\n\nQue souhaitez-vous faire ?",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
+# ==================== AJOUT DE FICHE ====================
 async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -160,7 +162,7 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[query.from_user.id] = {"cat": cat, "sub": sub, "step": "prenom"}
     
     await query.edit_message_text(
-        f"➕ *Nouvelle Fiche*\n\n*1/3 Prénom :*",
+        f"➕ *NOUVELLE FICHE*\n📂 {cat} → {sub}\n\n*1/3 Entrez le Prénom :*",
         parse_mode="Markdown"
     )
     return STATE_PRENOM
@@ -171,7 +173,7 @@ async def get_prenom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[uid]["prenom"] = prenom
     user_sessions[uid]["step"] = "nom"
     
-    await update.message.reply_text(f"✅ {prenom}\n\n*2/3 Nom :*", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Prénom : *{prenom}*\n\n*2/3 Entrez le Nom :*", parse_mode="Markdown")
     return STATE_NOM
 
 async def get_nom(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,7 +182,7 @@ async def get_nom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[uid]["nom"] = nom
     user_sessions[uid]["step"] = "content"
     
-    await update.message.reply_text(f"✅ {nom}\n\n*3/3 Contenu :*", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Nom : *{nom}*\n\n*3/3 Entrez le contenu de la fiche :*", parse_mode="Markdown")
     return STATE_CONTENT
 
 async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,10 +206,11 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     del user_sessions[uid]
     
-    await update.message.reply_text(f"✅ *Enregistré !*\nID: `{note_id}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *FICHE ENREGISTRÉE*\n🆔 ID: `{note_id}`", parse_mode="Markdown")
     await show_vitrine_menu(update)
     return ConversationHandler.END
 
+# ==================== LISTE & DÉTAIL ====================
 async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -226,7 +229,7 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not notes:
-        await query.edit_message_text("📭 Aucune fiche.")
+        await query.edit_message_text(f"📭 *Aucune fiche*\n📂 {cat} → {sub}", parse_mode="Markdown")
         return
     
     text = f"📋 *{cat} → {sub}*\n\n"
@@ -252,11 +255,17 @@ async def view_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not note:
-        await query.edit_message_text("❌ Introuvable")
+        await query.edit_message_text("❌ Fiche introuvable.", parse_mode="Markdown")
         return
     
-    text = (f"🆔 ID: `{note[0]}`\n📂 {note[1]} → {note[2]}\n"
-            f"👤 *{note[3]} {note[4]}*\n📝 `{note[5]}`\n🕒 {note[6]}")
+    # note: (id, cat, sub, prenom, nom, content, date)
+    text = (
+        f"🆔 ID: `{note[0]}`\n"
+        f"📂 {note[1]} → {note[2]}\n"
+        f"👤 *{note[3]} {note[4]}*\n"
+        f"📝 *Contenu :*\n`{note[5]}`\n"
+        f"🕒 {note[6]}"
+    )
     
     keyboard = [
         [InlineKeyboardButton("✏️ Modifier", callback_data=f"edit_{nid}")],
@@ -266,48 +275,89 @@ async def view_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# ==================== ✏️ MODIFICATION (NOUVEAU COMPORTEMENT) ====================
 async def start_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    nid = int(query.data.split("_")[1])
-    user_sessions[query.from_user.id] = {"edit_id": nid, "step": "edit"}
     
-    await query.edit_message_text("✏️ *Nouveau contenu :*", parse_mode="Markdown")
+    note_id = int(query.data.split("_")[1])
+    
+    # Récupérer le contenu actuel
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT content, category, subcategory FROM notes WHERE id=%s", (note_id,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    if not result:
+        await query.edit_message_text("❌ Fiche introuvable.", parse_mode="Markdown")
+        return ConversationHandler.END
+    
+    current_content, cat, sub = result
+    
+    # Stocker l'ID pour la sauvegarde
+    context.user_data['edit_id'] = note_id
+    context.user_data['cat'] = cat
+    context.user_data['sub'] = sub
+    
+    # Afficher le texte actuel et demander le nouveau
+    preview = current_content if len(current_content) < 300 else current_content[:300] + "..."
+    
+    await query.edit_message_text(
+        f"✏️ *MODIFICATION*\n"
+        f"📂 {cat} → {sub}\n\n"
+        f"📝 *Texte actuel :*\n`{preview}`\n\n"
+        f"👇 *Envoyez directement le NOUVEAU texte ci-dessous :*",
+        parse_mode="Markdown"
+    )
     return STATE_EDIT
 
 async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_content = update.message.text
-    uid = update.effective_user.id
-    sess = user_sessions.get(uid)
+    note_id = context.user_data.get('edit_id')
+    cat = context.user_data.get('cat')
+    sub = context.user_data.get('sub')
     
-    if not sess or "edit_id" not in sess:
+    if not note_id:
+        await update.message.reply_text("❌ Erreur de session. Recommencez.", parse_mode="Markdown")
         return ConversationHandler.END
     
+    # Mise à jour dans la base
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE notes SET content=%s WHERE id=%s", (new_content, sess["edit_id"]))
+    cur.execute("UPDATE notes SET content=%s WHERE id=%s", (new_content, note_id))
     conn.commit()
     cur.close()
     conn.close()
     
-    del user_sessions[uid]
-    await update.message.reply_text("✅ *Modifié !*", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"✅ *FICHE MODIFIÉE*\n"
+        f"📂 {cat} → {sub}\n"
+        f"📝 Nouveau contenu enregistré.",
+        parse_mode="Markdown"
+    )
+    
+    context.user_data.clear()
     await show_vitrine_menu(update)
     return ConversationHandler.END
 
+# ==================== SUPPRESSION ====================
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     nid = int(query.data.split("_")[1])
     
     keyboard = [
-        [InlineKeyboardButton("✅ Oui", callback_data=f"exec_del_{nid}")],
-        [InlineKeyboardButton("❌ Non", callback_data=f"view_{nid}")]
+        [InlineKeyboardButton("✅ Oui, supprimer", callback_data=f"exec_del_{nid}")],
+        [InlineKeyboardButton("❌ Annuler", callback_data=f"view_{nid}")]
     ]
     
-    await query.edit_message_text("⚠️ *Confirmer suppression ?*", 
-                                  reply_markup=InlineKeyboardMarkup(keyboard), 
-                                  parse_mode="Markdown")
+    await query.edit_message_text(
+        "⚠️ *CONFIRMER SUPPRESSION*\n\nCette action est irréversible.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 async def exec_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -321,7 +371,7 @@ async def exec_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
     
-    await query.edit_message_text("🗑️ *Supprimé.*", parse_mode="Markdown")
+    await query.edit_message_text("🗑️ *Fiche supprimée avec succès.*", parse_mode="Markdown")
 
 # ==================== POINT D'ENTRÉE ====================
 def main():
@@ -336,6 +386,7 @@ def main():
            .get_updates_request(request)
            .build())
     
+    # Handlers principaux
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(show_vitrine_menu, pattern="^main$"))
     app.add_handler(CallbackQueryHandler(category_view, pattern="^cat_"))
@@ -345,6 +396,7 @@ def main():
     app.add_handler(CallbackQueryHandler(confirm_delete, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(exec_delete, pattern="^exec_del_"))
     
+    # Conversation: AJOUT
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add, pattern="^add_")],
         states={
@@ -355,9 +407,12 @@ def main():
         fallbacks=[]
     ))
     
+    # Conversation: MODIFICATION
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_edit, pattern="^edit_")],
-        states={STATE_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)]},
+        states={
+            STATE_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)],
+        },
         fallbacks=[]
     ))
     
