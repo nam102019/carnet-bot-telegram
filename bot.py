@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 🤖 Bot Vitrine - Carnet de Sauvegarde
-Hébergé sur Railway.app
+Hébergé sur Railway.app avec PostgreSQL
 """
 
 import logging
-import sqlite3
 import os
 import csv
 import io
@@ -17,6 +16,15 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
+# 🔧 Import PostgreSQL
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    USE_POSTGRES = True
+except ImportError:
+    USE_POSTGRES = False
+    import sqlite3
+
 # Configuration Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
@@ -24,44 +32,70 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🔑 Token depuis les variables d'environnement
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8717485898:AAHXQqG-M1v1MqKRHTWyQ_nOiP8oJeY15xE")
+# 🔑 Token
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# 📂 Base de données (dans le dossier actuel sur Railway)
-DB_NAME = "carnet_vitrine.db"
+# 🗄️ Base de données
+DATABASE_URL = os.getenv("DATABASE_URL")
+USE_POSTGRES = DATABASE_URL is not None
 
-# 📋 Structure Catégories
+# 📋 Catégories
 CATEGORIES = {
     "1xbet": {"emoji": "🔵", "subs": ["Partenaire promo code", "Agent Mobcash"]},
     "Afropari": {"emoji": "🟣", "subs": ["Partenaire promo code", "Agent Mobcash"]},
     "Melbet": {"emoji": "🟡", "subs": ["Partenaire promo code", "Agent Mobcash"]}
 }
 
-# États conversation
+# États
 STATE_PRENOM, STATE_NOM, STATE_CONTENT, STATE_EDIT = range(4)
 user_sessions = {}
 
+def get_db_connection():
+    """Connexion BDD"""
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect("carnet_vitrine.db")
+
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT NOT NULL,
-            subcategory TEXT NOT NULL,
-            prenom TEXT NOT NULL,
-            nom TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    """Initialise la BDD"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    if USE_POSTGRES:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS notes (
+                id SERIAL PRIMARY KEY,
+                category TEXT NOT NULL,
+                subcategory TEXT NOT NULL,
+                prenom TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+    else:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                subcategory TEXT NOT NULL,
+                prenom TEXT NOT NULL,
+                nom TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+    
     conn.commit()
+    cur.close()
     conn.close()
-    logger.info(f"✅ DB initialisée: {DB_NAME}")
+    db_type = "PostgreSQL ✅" if USE_POSTGRES else "SQLite"
+    logger.info(f"✅ DB initialisée : {db_type}")
 
 # ==================== COMMANDES ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 *Bienvenue !*\n\n🏪 Utilisez le menu ci-dessous.", parse_mode="Markdown")
+    await update.message.reply_text("👋 *Bienvenue !*\n\n🏪 Utilisez le menu.", parse_mode="Markdown")
     await show_vitrine_menu(update)
 
 async def show_vitrine_menu(update: Update):
@@ -159,17 +193,20 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sess:
         return ConversationHandler.END
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO notes (category, subcategory, prenom, nom, content) VALUES (?,?,?,?,?)",
-              (sess["cat"], sess["sub"], sess["prenom"], sess["nom"], content))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO notes (category, subcategory, prenom, nom, content) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (sess["cat"], sess["sub"], sess["prenom"], sess["nom"], content)
+    )
     conn.commit()
-    nid = c.lastrowid
+    note_id = cur.fetchone()[0]
+    cur.close()
     conn.close()
     
     del user_sessions[uid]
     
-    await update.message.reply_text(f"✅ *Enregistré !*\nID: `{nid}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *Enregistré !*\nID: `{note_id}`", parse_mode="Markdown")
     await show_vitrine_menu(update)
     return ConversationHandler.END
 
@@ -180,10 +217,14 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cat = parts[1]
     sub = parts[2].replace("_", " ")
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, prenom, nom, content FROM notes WHERE category=? AND subcategory=? ORDER BY nom, prenom", (cat, sub))
-    notes = c.fetchall()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, prenom, nom, content FROM notes WHERE category=%s AND subcategory=%s ORDER BY nom, prenom",
+        (cat, sub)
+    )
+    notes = cur.fetchall()
+    cur.close()
     conn.close()
     
     if not notes:
@@ -205,10 +246,11 @@ async def view_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     nid = int(query.data.split("_")[1])
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT * FROM notes WHERE id=?", (nid,))
-    note = c.fetchone()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM notes WHERE id=%s", (nid,))
+    note = cur.fetchone()
+    cur.close()
     conn.close()
     
     if not note:
@@ -243,10 +285,11 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sess or "edit_id" not in sess:
         return ConversationHandler.END
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE notes SET content=? WHERE id=?", (new_content, sess["edit_id"]))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE notes SET content=%s WHERE id=%s", (new_content, sess["edit_id"]))
     conn.commit()
+    cur.close()
     conn.close()
     
     del user_sessions[uid]
@@ -273,10 +316,11 @@ async def exec_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     nid = int(query.data.split("_")[2])
     
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM notes WHERE id=?", (nid,))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM notes WHERE id=%s", (nid,))
     conn.commit()
+    cur.close()
     conn.close()
     
     await query.edit_message_text("🗑️ *Supprimé.*", parse_mode="Markdown")
@@ -284,15 +328,9 @@ async def exec_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== POINT D'ENTRÉE ====================
 def main():
     init_db()
-    logger.info("🚀 Démarrage Bot Vitrine sur Railway...")
+    logger.info("🚀 Démarrage Bot Vitrine...")
     
-    # Configuration connexion optimisée
-    request = HTTPXRequest(
-        read_timeout=60,
-        write_timeout=60,
-        connect_timeout=30,
-        pool_timeout=30
-    )
+    request = HTTPXRequest(read_timeout=60, write_timeout=60, connect_timeout=30)
     
     app = (Application.builder()
            .token(TOKEN)
@@ -300,7 +338,6 @@ def main():
            .get_updates_request(request)
            .build())
     
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(show_vitrine_menu, pattern="^main$"))
     app.add_handler(CallbackQueryHandler(category_view, pattern="^cat_"))
@@ -310,7 +347,6 @@ def main():
     app.add_handler(CallbackQueryHandler(confirm_delete, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(exec_delete, pattern="^exec_del_"))
     
-    # Conversations
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add, pattern="^add_")],
         states={
