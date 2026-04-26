@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 🔑 Token depuis les variables d'environnement
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8385801130:AAFbTOpru6N-C2zo0YJTXllDT6VDQdYCGzE")
+# TOKEN = os.getenv("TELEGRAM_TOKEN", "8385801130:AAFbTOpru6N-C2zo0YJTXllDT6VDQdYCGzE")
 
 # 📂 Base de données (dans le dossier actuel sur Railway)
 DB_NAME = "carnet_vitrine.db"
